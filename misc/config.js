@@ -23,7 +23,7 @@ export const loadConfig = (filename="config.json") => {
         loadedConfig = JSON.parse(loadedConfig);
     } catch (e) {return console.error(`Could not JSON parse ${filename}! Is it corrupt?`, e)}
 
-    if(!loadedConfig.token || loadedConfig.token === "token goes here")
+    if((!loadedConfig.token || loadedConfig.token === "token goes here") && loadConfigFromEnv("token") === undefined)
         return console.error("You forgot to put your bot token in config.json!");
 
     loadedConfig.fetchSkinPrices = loadedConfig.showSkinPrices;
@@ -81,6 +81,16 @@ export const saveConfig = (filename="config.json", configToSave) => {
 }
 
 const applyConfig = (loadedConfig, name, defaultValue) => {
-    if(loadedConfig[name] === undefined) config[name] = defaultValue;
-    else config[name] = loadedConfig[name];
+    const envConfig = loadConfigFromEnv(name);
+    if(envConfig !== undefined) {
+        console.log(`load ${name} from env variable`);
+        config[name] = envConfig;
+    }else if(loadedConfig[name] === undefined) {
+        config[name] = defaultValue;
+    }
+    else {
+        config[name] = loadedConfig[name];
+    }
 }
+
+const loadConfigFromEnv = (name) => process.env[`SKINPEEK_${name.toUpperCase()}`]
