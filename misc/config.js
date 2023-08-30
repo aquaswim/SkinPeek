@@ -15,13 +15,16 @@ export const loadConfig = (filename="config.json") => {
             console.error(`(Hint: If you can only see ${filename}, try enabling "file name extensions" in file explorer)`)
         } catch(e1) {
             console.error(`Could not find ${filename}!`, e);
+            return
         }
-        return;
     }
 
     try {
         loadedConfig = JSON.parse(loadedConfig);
-    } catch (e) {return console.error(`Could not JSON parse ${filename}! Is it corrupt?`, e)}
+    } catch (e) {
+        console.error(`Could not JSON parse ${filename}! Is it corrupt?`, e)
+        loadedConfig = {};
+    }
 
     if((!loadedConfig.token || loadedConfig.token === "token goes here") && loadConfigFromEnv("token") === undefined)
         return console.error("You forgot to put your bot token in config.json!");
