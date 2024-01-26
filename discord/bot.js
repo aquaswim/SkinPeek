@@ -9,6 +9,9 @@ import {
     ButtonBuilder,
     ButtonStyle,
     ActivityType,
+    ModalBuilder, 
+    TextInputBuilder, 
+    TextInputStyle
 } from "discord.js";
 import cron from "node-cron";
 
@@ -30,7 +33,9 @@ import {
     skinCollectionPageEmbed,
     skinCollectionSingleEmbed,
     valMaintenancesEmbeds,
-    collectionOfWeaponEmbed
+    collectionOfWeaponEmbed,
+    renderProfile,
+    renderCompetitiveMatchHistory
 } from "./embed.js";
 import { authUser, fetchRiotClientVersion, getUser, getUserList, getRegion, getUserInfo } from "../valorant/auth.js";
 import { getBalance } from "../valorant/shop.js";
@@ -58,7 +63,8 @@ import {
     skinNameAndEmoji,
     valNamesToDiscordNames, WeaponTypeUuid,
     WeaponType,
-    fetch
+    fetch,
+    calcLength
 } from "../misc/util.js";
 import config, { loadConfig, saveConfig } from "../misc/config.js";
 import { localError, localLog, sendConsoleOutput } from "../misc/logger.js";
@@ -82,6 +88,7 @@ import {
 import fuzzysort from "fuzzysort";
 import { renderCollection, getSkins } from "../valorant/inventory.js";
 import { getLoadout } from "../valorant/inventory.js";
+import { getAccountInfo, fetchMatchHistory } from "../valorant/profile.js";
 import { spawn } from "child_process";
 import * as fs from "fs";
 
@@ -366,6 +373,16 @@ const commands = [
     {
         name: "info",
         description: "Show information about the bot"
+    },
+    {
+        name: "profile",
+        description: "Check your VALORANT profile",
+        options: [{
+            type: ApplicationCommandOptionType.User,
+            name: "user",
+            description: "Optional: see someone else's profile!",
+            required: false
+        }]
     }
 ];
 
@@ -456,7 +473,8 @@ client.on("messageCreate", async (message) => {
                 const s = "Here is the config.json the bot currently has loaded:```json\n" + JSON.stringify({
                     ...config,
                     token: "[redacted]",
-                    "githubToken": config.githubToken ? "[redacted]" : config.githubToken
+                    "githubToken": config.githubToken ? "[redacted]" : config.githubToken,
+                    "HDevToken": config.HDevToken ? "[redacted]" : config.HDevToken
                 }, null, 2) + "```";
                 await message.reply(s);
             } else if (splits[1] === "clearcache") {
@@ -1165,6 +1183,37 @@ client.on("interactionCreate", async (interaction) => {
 
                     break;
                 }
+                case "profile": {
+                    let targetUser = interaction.user;
+
+                    const otherUser = interaction.options.getUser("user");
+                    if (otherUser && otherUser.id !== interaction.user.id) {
+                        const otherValorantUser = getUser(otherUser.id);
+                        if (!otherValorantUser) return await interaction.reply({
+                            embeds: [basicEmbed(s(interaction).error.NOT_REGISTERED_OTHER)]
+                        });
+
+                        if (!getSetting(otherUser.id, "othersCanViewProfile")) return await interaction.reply({
+                            embeds: [basicEmbed(s(interaction).error.OTHER_PROFILE_DISABLED.f({ u: `<@${otherUser.id}>` }))]
+                        });
+
+                        targetUser = otherUser;
+                    }
+                    else if (!valorantUser) return await interaction.reply({
+                        embeds: [basicEmbed(s(interaction).error.NOT_REGISTERED)],
+                        ephemeral: true
+                    });
+
+                    await defer(interaction);
+                    const user = getUser(targetUser.id)
+                    const message = await renderProfile(interaction, await getAccountInfo(user, interaction), targetUser.id);
+
+                    await interaction.followUp(message);
+
+                    console.log(`Sent ${targetUser.tag}'s profile!`); // also logged if maintenance/login failed
+
+                    break;
+                }
                 default: {
                     await interaction.reply(s(interaction).info.UNHANDLED_COMMAND);
                     break;
@@ -1461,8 +1510,7 @@ client.on("interactionCreate", async (interaction) => {
                     embeds: message.embeds,
                     components: message.components
                 });
-
-                if (accountIndex !== "accessory" && accountIndex !== "daily") {
+                if (accountIndex !== "accessory" && accountIndex !== "daily" && accountIndex !== "c") {
                     const success = switchAccount(id, parseInt(accountIndex));
                     if (!success) return await interaction.followUp({
                         embeds: [basicEmbed(s(interaction).error.ACCOUNT_NOT_FOUND)],
@@ -1478,6 +1526,8 @@ client.on("interactionCreate", async (interaction) => {
                     case "bp": newMessage = await renderBattlepassProgress(interaction, id); break;
                     case "alerts": newMessage = await fetchAlerts(interaction); break;
                     case "cl": newMessage = await renderCollection(interaction, id); break;
+                    case "profile": newMessage = await renderProfile(interaction, await getAccountInfo(getUser(id)), id); break;
+                    case "comphistory": newMessage = await renderCompetitiveMatchHistory(interaction, await getAccountInfo(getUser(id)),await fetchMatchHistory(interaction, getUser(id), "competitive"), id); break;
                 }
                 /* else */ if (customId.startsWith("clw")) {
                     let valorantUser = getUser(id);
@@ -1490,6 +1540,95 @@ client.on("interactionCreate", async (interaction) => {
 
 
                 await message.edit(newMessage);
+            } else if (interaction.customId.startsWith("gotopage")) {
+                let [, pageId, userId, max] = interaction.customId.split('/');
+                let weaponTypeIndex
+                if(pageId === 'clwpage') [, pageId, weaponTypeIndex, userId, max] = interaction.customId.split('/');
+
+                if (userId !== interaction.user.id){
+                    if (pageId === 'changestatspage'){
+                        return await interaction.reply({
+                            embeds: [basicEmbed(s(interaction).error.NOT_UR_MESSAGE_STATS)],
+                            ephemeral: true
+                        });
+                    }else if (pageId === 'changealertspage'){
+                        return await interaction.reply({
+                            embeds: [basicEmbed(s(interaction).error.NOT_UR_ALERT)],
+                            ephemeral: true
+                        });
+                    }
+                }
+
+                const modal = new ModalBuilder()
+                    .setCustomId(`gotopage/${pageId}${weaponTypeIndex ? `/${weaponTypeIndex}`: ''}/${userId}/${max}`)
+                    .setTitle(s(interaction).modal.PAGE_TITLE);
+
+                const pageInput = new TextInputBuilder()
+                    .setMinLength(1)
+                    .setMaxLength(calcLength(max))
+                    .setPlaceholder(s(interaction).modal.PAGE_INPUT_PLACEHOLDER)
+                    .setRequired(true)
+                    .setCustomId('pageIndex')
+                    .setLabel(s(interaction).modal.PAGE_INPUT_LABEL.f({max: max}))
+                    .setStyle(TextInputStyle.Short);
+
+                const q1 = new ActionRowBuilder().addComponents(pageInput);
+                modal.addComponents(q1);
+                await interaction.showModal(modal);
+            }
+        } catch (e) {
+            await handleError(e, interaction);
+        }
+    } else if (interaction.isModalSubmit()){
+        try {
+            if (interaction.customId.startsWith("gotopage")) {
+                let [, pageId, userId, max] = interaction.customId.split('/');
+                let weaponTypeIndex
+                if(pageId === 'clwpage') [, pageId, weaponTypeIndex, userId, max] = interaction.customId.split('/');
+                const pageIndex = interaction.fields.getTextInputValue('pageIndex');
+
+                if(isNaN(Number(pageIndex))){
+                    return await interaction.reply({
+                        embeds: [basicEmbed(s(interaction).error.NOT_A_NUMBER)],
+                        ephemeral: true
+                    });
+                }else if(Number(pageIndex) > max || Number(pageIndex) <= 0){
+                    return await interaction.reply({
+                        embeds: [basicEmbed(s(interaction).error.INVALID_PAGE_NUMBER.f({max: max}))],
+                        ephemeral: true
+                    });
+                }
+
+                switch (pageId) {
+                    case "clpage": clpage(); break;
+                    case "clwpage": clwpage(); break;
+                    case "changealertspage": await interaction.update(await alertsPageEmbed(interaction, await filteredAlertsForUser(interaction), parseInt(pageIndex-1), await VPEmoji(interaction))); break;
+                    case "changestatspage": await interaction.update(await allStatsEmbed(interaction, await getOverallStats(), parseInt(pageIndex-1)));break;
+                }
+
+                async function clpage() {
+                    let user;
+                    if (userId !== interaction.user.id) user = getUser(userId);
+                    else user = valorantUser;
+
+                    const loadoutResponse = await getLoadout(user);
+                    if (!loadoutResponse.success) return await interaction.reply(authFailureMessage(interaction, loadoutResponse, s(interaction).error.AUTH_ERROR_COLLECTION, userId !== interaction.user.id));
+
+                    await interaction.update(await skinCollectionPageEmbed(interaction, userId, user, loadoutResponse, parseInt(pageIndex-1)));
+                }
+
+                async function clwpage() {
+                    const weaponType = Object.values(WeaponTypeUuid)[parseInt(weaponTypeIndex)];
+    
+                    let user;
+                    if (userId !== interaction.user.id) user = getUser(userId);
+                    else user = valorantUser;
+    
+                    const skinsResponse = await getSkins(user);
+                    if (!skinsResponse.success) return await interaction.reply(authFailureMessage(interaction, skinsResponse, s(interaction).error.AUTH_ERROR_COLLECTION, userId !== interaction.user.id));
+    
+                    await interaction.update(await collectionOfWeaponEmbed(interaction, userId, user, weaponType, skinsResponse.skins, parseInt(pageIndex-1)));
+                }
             }
         } catch (e) {
             await handleError(e, interaction);

@@ -13,10 +13,10 @@ import {
     itemTypes,
     removeAlertActionRow,
     removeAlertButton,
-    fetchChannel, isDefaultSkin, WeaponTypeUuid, fetch
+    fetchChannel, isDefaultSkin, WeaponTypeUuid, ordinalSuffix
 } from "../misc/util.js";
 import config from "../misc/config.js";
-import {DEFAULT_VALORANT_LANG, discToValLang, l, s} from "../misc/languages.js";
+import {DEFAULT_VALORANT_LANG, discToValLang, l, s, hideUsername} from "../misc/languages.js";
 import {ActionRowBuilder, ButtonBuilder, ButtonStyle, escapeMarkdown, EmbedBuilder, StringSelectMenuBuilder, StringSelectMenuOptionBuilder} from "discord.js";
 import {getStatsFor} from "../misc/stats.js";
 import {getUser} from "../valorant/auth.js";
@@ -24,7 +24,7 @@ import {readUserJson, removeDupeAccounts, saveUser} from "../valorant/accountSwi
 import {getSetting, humanifyValue, settingIsVisible, settingName} from "../misc/settings.js";
 import {VPEmoji} from "./emoji.js";
 import {getNextNightMarketTimestamp} from "../valorant/shop.js";
-
+import {isThereANM} from "../valorant/shopManager.js";
 
 export const VAL_COLOR_1 = 0xFD4553;
 export const VAL_COLOR_2 = 0x202225;
@@ -551,7 +551,7 @@ const bundleItemEmbed = async (item, interaction, VPemojiString) => {
     }
 }
 
-const skinEmbed = async (uuid, price, interaction, VPemojiString) => {
+export const skinEmbed = async (uuid, price, interactionOrId, VPemojiString, channel = null) => {
     const skin = await getSkin(uuid);
     const colorMap = {
       '0cebb8be-46d7-c12a-d306-e9907bfc5a25': 0x009984,
@@ -563,7 +563,7 @@ const skinEmbed = async (uuid, price, interaction, VPemojiString) => {
 
     const color = colorMap[skin.rarity] || '000000'; // default to black
     return {
-        title: await skinNameAndEmoji(skin, interaction.channel, interaction),
+        title: await skinNameAndEmoji(skin, interactionOrId.channel || channel, interactionOrId),
         url: config.linkItemImage ? skin.icon : null,
         description: priceDescription(VPemojiString, price),
         color: color,
@@ -630,7 +630,13 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, {loadout,
     const skinsUuid = [];
     const createField = async (weaponUuid, inline=true) => {
         const weapon = await getWeapon(weaponUuid);
-        const skin = await getSkinFromSkinUuid(loadout.Guns.find(gun => gun.ID === weaponUuid).SkinID);
+        const skinUuid = loadout.Guns.find(gun => gun.ID === weaponUuid)?.SkinID
+        if(!skinUuid) return {
+            name: 'No information available',
+            value: 'Login to the game for display',
+            inline: inline
+        }
+        const skin = await getSkinFromSkinUuid(skinUuid);
         skinsUuid.push(skin);
         totalValue += skin.price;
 
@@ -664,6 +670,8 @@ export const skinCollectionSingleEmbed = async (interaction, id, user, {loadout,
         await createField(WeaponTypeUuid.Bulldog),
         await createField(WeaponTypeUuid.Guardian),
         await createField(WeaponTypeUuid.Marshal),
+
+        await createField(WeaponTypeUuid.Outlaw),
 
         await createField(WeaponTypeUuid.Stinger),
         await createField(WeaponTypeUuid.Ares),
@@ -720,8 +728,13 @@ export const skinCollectionPageEmbed = async (interaction, id, user, {loadout, f
 
     const createEmbed = async (weaponUuid) => {
         const weapon = await getWeapon(weaponUuid);
-        const skin = await getSkinFromSkinUuid(loadout.Guns.find(gun => gun.ID === weaponUuid).SkinID);
-
+        const skinUuid = loadout.Guns.find(gun => gun.ID === weaponUuid)?.SkinID
+        if(!skinUuid) return {
+            title: 'No information available',
+            description: 'Login to the game for display',
+            color: VAL_COLOR_1,
+        }
+        const skin = await getSkinFromSkinUuid(skinUuid);
         totalValue += skin.price;
 
         const starEmoji = favorites.FavoritedContent[skin.skinUuid] ? " ⭐" : "";
@@ -736,7 +749,7 @@ export const skinCollectionPageEmbed = async (interaction, id, user, {loadout, f
     }
 
     const pages = [
-        [WeaponTypeUuid.Vandal, WeaponTypeUuid.Phantom, WeaponTypeUuid.Operator, WeaponTypeUuid.Knife],
+        [WeaponTypeUuid.Vandal, WeaponTypeUuid.Phantom, WeaponTypeUuid.Operator, WeaponTypeUuid.Outlaw, WeaponTypeUuid.Knife],
         [WeaponTypeUuid.Classic, WeaponTypeUuid.Sheriff, WeaponTypeUuid.Spectre, WeaponTypeUuid.Marshal],
         [WeaponTypeUuid.Frenzy, WeaponTypeUuid.Ghost, WeaponTypeUuid.Bulldog, WeaponTypeUuid.Guardian],
         [WeaponTypeUuid.Shorty, WeaponTypeUuid.Bucky, WeaponTypeUuid.Judge],
@@ -900,6 +913,158 @@ export const botInfoEmbed = (interaction, client, guildCount, userCount, registe
         }]
     }
 }
+const competitiveMatchEmbed = (interaction, matchData) => {
+    const embedTitle = `${s(interaction).match.COMPETITIVE}┊${matchData.metadata.map}・<t:${matchData.metadata.game_start+matchData.metadata.game_length}:R>`;
+    const roundDesc = `[**${matchData.metadata.pt_round_won}** : **${matchData.metadata.et_round_won}**]`;
+    const hsPercentDesc = `**${s(interaction).match.PERCENT.f({v:matchData.player.hs_percent})}** ${s(interaction).match.HS_PERCENT}`;
+    const adsDesc = `**${matchData.player.average_damage_round}** ${s(interaction).match.AVERAGE_DAMAGE_ROUND}`;
+    const acsDesc = `**${matchData.player.average_combat_score}** ${s(interaction).match.AVERAGE_COMBAT_SCORE}`;
+    const colors = {
+        red: 13195866,
+        grey: 9145227,
+        green: 7654512
+    }
+    let embedColor;
+    if (matchData.teams.red.has_won === true) {
+        if (matchData.player.team === "Red") {
+            embedColor = colors.green;
+        } else embedColor = colors.red;
+    } else if (matchData.teams.blue.has_won === true) {
+        if (matchData.player.team === "Blue") {
+            embedColor = colors.green;
+        } else embedColor = colors.red;
+    } else {
+        embedColor = colors.grey;
+    }
+
+    const mapDesc = `**${"`"+matchData.player.mmr+"`"}**`;
+    const embedDescription = `${mapDesc}・${roundDesc}・${hsPercentDesc}・${adsDesc}・${acsDesc}`;
+    const embed = {
+        "title": embedTitle,
+        "description": embedDescription,
+        "color": embedColor,
+        "author": {
+            "name": `${matchData.player.agent.name}・${matchData.player.kills} / ${matchData.player.deaths} / ${matchData.player.assists}・${matchData.player.kd} KD┊${matchData.player.position}`,
+            "icon_url": matchData.player.agent.iconUrl
+        }/*,
+        "thumbnail": {
+            "url": matchData.player.currentTierImageUrl
+        }*/
+    }
+
+    return embed
+}
+
+export const renderCompetitiveMatchHistory = async (interaction, accountData, matchHistoryData, targetId=interaction.user.id) => { //will be edited in the future
+    if(!accountData.success) return {embeds: [basicEmbed(s(interaction).error.GENERIC_ERROR.f({e: accountData.error}))]}
+    if(!matchHistoryData.success) return {embeds: [basicEmbed(s(interaction).error.GENERIC_ERROR.f({e: matchHistoryData.error}))]}
+    const account = accountData.data
+    const userName = hideUsername({u: account.account.name + "`#"+ account.account.tag + "`"}, targetId).u
+    const embeds = [{
+        "title": userName + ` • Lv. ${account.account.account_level}`,
+        "description": `${s(interaction).info.PROFILE_PEAK_RANK} ┊ **${account.mmr.highest_rank?.patched_tier}**`,
+        "color": 16632621, //TODO color according to account level
+        "author": {
+            "name": interaction.user.username + ` • ${account.mmr.current_data.ranking_in_tier} RR`,
+            "icon_url": account.mmr.current_data.images.large
+        },
+        "thumbnail": {
+            "url": account.account.card?.small
+        }
+    }];
+    for (let i = 0; i < matchHistoryData.data.length; i++) {
+        const embed = competitiveMatchEmbed(interaction, matchHistoryData.data[i])
+        embeds.push(embed);
+    }
+    const rows = switchAccountButtons(interaction, "comphistory", true, false, targetId)
+    return {embeds: embeds, components: rows}
+}
+
+export const renderProfile = async (interaction, data1, targetId=interaction.user.id) => { //will be edited in the future
+    if(!data1.success) return {embeds: [basicEmbed(s(interaction).error.GENERIC_ERROR.f({e: data1.error}))]}
+    const valorantUser = getUser(targetId)
+    const data = data1.data
+    const userName = hideUsername({u: data.account.name + "`#"+ data.account.tag + "`"}, targetId).u
+    const embeds = [{
+        "title": userName + ` • Lv. ${data.account.account_level}`,
+        "description": `${s(interaction).info.PROFILE_PEAK_RANK} ┊ **${data.mmr.highest_rank?.patched_tier}**`,
+        "color": 16632621, //TODO color according to account level
+        "author": {
+            "name": interaction.user.username + ` • ${data.mmr.current_data.ranking_in_tier} RR`,
+            "icon_url": data.mmr.current_data.images.large
+        },
+        "thumbnail": {
+            "url": data.account.card?.small
+        }
+    }];
+
+    if(config.notice && valorantUser) {
+        // users shouldn't see the same notice twice
+        if(!config.onlyShowNoticeOnce || valorantUser.lastNoticeSeen !== config.notice) {
+
+            // the notice can either be just a simple string, or a raw JSON embed data object
+            if(typeof config.notice === "string") {
+                if(config.notice.startsWith('{')) embeds.push(EmbedBuilder.from(JSON.parse(config.notice)).toJSON());
+                else embeds.push(basicEmbed(config.notice));
+            }
+            else embeds.push(EmbedBuilder.from(config.notice).toJSON());
+
+            valorantUser.lastNoticeSeen = config.notice;
+            saveUser(valorantUser);
+        }
+    }
+
+    const rows = profileButtons(interaction, targetId)
+    switchAccountButtons(interaction, "profile", true, false, targetId).map(a => rows.push(a))
+
+    return {embeds: embeds, components: rows}
+}
+
+const profileButtons = (interaction, id, back=false) => {
+    if(back){ // not implemented yet
+        const returnButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Primary)
+        .setLabel(s(interaction).info.RETURN_BUTTON)
+        .setEmoji("↩️")
+        .setCustomId(`account/profile/${id}/c`);
+        return [new ActionRowBuilder().setComponents(returnButton)]
+    }
+    const shopButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Primary)
+        .setLabel(s(interaction).info.DAILY_SHOP_SWITCH_BUTTON)
+        .setEmoji("🛒")
+        .setCustomId(`account/shop/${id}/daily`);
+
+    const nightMarketButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Danger)
+        .setLabel(s(interaction).info.NIGHT_MARKET_BUTTON)
+        .setEmoji("🌑")
+        .setDisabled(!isThereANM()) // should be working
+        .setCustomId(`account/nm/${id}/c`);
+
+    const battlepassButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Secondary)
+        .setLabel(s(interaction).info.BATTLEPASS_BUTTON)
+        .setEmoji("🗓️")
+        .setCustomId(`account/bp/${id}/c`);
+
+    const collectionButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Primary)
+        .setLabel(s(interaction).info.COLLECTION_BUTTON)
+        .setEmoji("🔫")
+        .setCustomId(`account/cl/${id}/c`);
+
+    const competitiveHistoryButton = new ButtonBuilder()
+        .setStyle(ButtonStyle.Primary)
+        .setLabel(s(interaction).info.COMPETITIVE_HISTORY_BUTTON)
+        .setEmoji("⚔️")
+        .setCustomId(`account/comphistory/${id}/c`);
+
+    const row1 = new ActionRowBuilder().setComponents(shopButton, nightMarketButton, battlepassButton, collectionButton, competitiveHistoryButton);
+    const rows = [row1]
+
+    return rows;
+}
 
 export const ownerMessageEmbed = (messageContent, author) => {
     return {
@@ -920,11 +1085,12 @@ const priceDescription = (VPemojiString, price) => {
 const pageButtons = (pageId, userId, current, max) => {
     const leftButton = new ButtonBuilder().setStyle(ButtonStyle.Secondary).setEmoji("◀").setCustomId(`${pageId}/${userId}/${current - 1}`);
     const rightButton = new ButtonBuilder().setStyle(ButtonStyle.Secondary).setEmoji("▶").setCustomId(`${pageId}/${userId}/${current + 1}`);
+    const goToPageButton = new ButtonBuilder().setStyle(ButtonStyle.Secondary).setEmoji("🔍").setCustomId(`gotopage/${pageId}/${userId}/${max}`);
 
     if(current === 0) leftButton.setEmoji("⏪");
     if(current === max - 1) rightButton.setEmoji("⏩");
 
-    return new ActionRowBuilder().setComponents(leftButton, rightButton);
+    return new ActionRowBuilder().setComponents(leftButton, rightButton, goToPageButton);
 }
 
 export const switchAccountButtons = (interaction, customId, oneAccountButton=false, accessory = false, id=interaction?.user?.id || interaction) => {
