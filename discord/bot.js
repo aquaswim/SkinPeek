@@ -298,6 +298,17 @@ const commands = [
         ]
     },
     {
+        name: "logout",
+        description: "Delete your credentials from the bot, but keep your alerts..",
+        options: [{
+            type: ApplicationCommandOptionType.String,
+            name: "account",
+            description: "The account you want to logout from. Leave blank to logout of your current account.",
+            required: false,
+            autocomplete: true
+        }]
+    },
+    {
         name: "forget",
         description: "Forget and permanently delete your account from the bot.",
         options: [{
@@ -894,7 +905,7 @@ client.on("interactionCreate", async (interaction) => {
                         embeds: [basicEmbed(s(interaction).info.ACCOUNT_UPDATED.f({ u: user.username }, interaction))],
                     });
                     break;
-                }
+            }
                 case "testalerts": {
                     if (!valorantUser) return await interaction.reply({
                         embeds: [basicEmbed(s(interaction).error.NOT_REGISTERED)],
@@ -968,6 +979,7 @@ client.on("interactionCreate", async (interaction) => {
 
                     break;
                 }
+                case "logout": 
                 case "forget": {
                     const accountCount = getNumberOfAccounts(interaction.user.id);
                     if (accountCount === 0) return await interaction.reply({
@@ -1700,6 +1712,12 @@ const handleError = async (e, interaction) => {
         console.error(e2);
     }
 }
+
+// don't crash the bot, no matter what!
+process.on("uncaughtException", (err) => {
+    console.error("Uncaught exception!");
+    console.error(err.stack || err);
+});
 
 export const startBot = () => {
     console.log("Logging in...");
