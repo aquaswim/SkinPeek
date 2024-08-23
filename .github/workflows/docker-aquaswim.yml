@@ -1,0 +1,37 @@
+name: Build and push docker image (aquaswim)
+
+on:
+  push:
+    branches: [ feature/load-config-from-env ]
+
+env:
+  IMAGE_NAME: ${{ vars.ZETAREGISTRY_HOSTNAME }}/skinpeek
+  REGISTRY_HOST: ${{ vars.ZETAREGISTRY_HOSTNAME }}
+  REGISTRY_USERNAME: ${{ secrets.ZETAREGISTRY_USERNAME }}
+  REGISTRY_PASSWORD: ${{ secrets.ZETAREGISTRY_PASSWORD }}
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Login to registry
+        run:  docker login $REGISTRY_HOST --username $REGISTRY_USERNAME --password "$REGISTRY_PASSWORD"
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME}}
+          tags: |
+                  type=sha,format=short,prefix=
+      - name: Build and push Docker images
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+            context: .
+            tags: |
+                ${{ steps.meta.outputs.tags }}
+                ${{ env.IMAGE_NAME}}:latest                        
+            labels: ${{ steps.meta.outputs.labels }}
+            push: true
